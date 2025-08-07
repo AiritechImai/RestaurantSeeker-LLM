@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BookSeeker - 自然言語で書籍検索</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📚 BookSeeker</h1>
+            <p>自然言語で書籍を検索し、価格を比較できます</p>
+        </header>
+
+        <main>
+            <div id="search-section" class="section">
+                <div class="search-box">
+                    <textarea id="search-input" placeholder="例: 村上春樹のデビュー作で羊が出てくるやつ" rows="3"></textarea>
+                    <button id="search-btn" onclick="searchBooks()">検索</button>
+                </div>
+                
+                <div id="loading" class="loading hidden">
+                    <div class="spinner"></div>
+                    <p>検索中...</p>
+                </div>
+            </div>
+
+            <div id="candidates-section" class="section hidden">
+                <h2>候補の書籍</h2>
+                <p>該当する書籍を選択してください:</p>
+                <div id="candidates-list"></div>
+            </div>
+
+            <div id="book-info-section" class="section hidden">
+                <h2>書籍情報</h2>
+                <div id="book-info"></div>
+                <button id="compare-prices-btn" onclick="comparePrices()" class="primary-btn">価格を比較する</button>
+            </div>
+
+            <div id="price-comparison-section" class="section hidden">
+                <h2>価格比較</h2>
+                <div id="price-comparison-table"></div>
+            </div>
+
+            <div id="error-section" class="section hidden">
+                <div class="error-message">
+                    <h3>エラー</h3>
+                    <p id="error-text"></p>
+                    <button onclick="resetSearch()" class="secondary-btn">新しい検索を開始</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

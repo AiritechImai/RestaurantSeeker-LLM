@@ -3,21 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BookSeeker - 自然言語で書籍検索</title>
+    <title>RestaurantSeeker - 自然言語でレストラン検索</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>📚 BookSeeker</h1>
-            <p>自然言語で書籍を検索し、価格を比較できます</p>
+            <h1>🍽️ RestaurantSeeker</h1>
+            <p>自然言語でレストランを検索し、価格・予約情報を比較できます</p>
         </header>
 
         <main>
             <div id="search-section" class="section">
                 <div class="search-box">
-                    <textarea id="search-input" placeholder="例: 村上春樹のデビュー作で羊が出てくるやつ" rows="3"></textarea>
-                    <button id="search-btn" onclick="searchBooks()">検索</button>
+                    <textarea id="search-input" placeholder="例: 新宿で美味しい寿司屋、デートにおすすめのイタリアン" rows="3"></textarea>
+                    <button id="search-btn" onclick="searchRestaurants()">検索</button>
                 </div>
                 
                 <div id="loading" class="loading hidden">
@@ -27,19 +27,19 @@
             </div>
 
             <div id="candidates-section" class="section hidden">
-                <h2>候補の書籍</h2>
-                <p>該当する書籍を選択してください:</p>
+                <h2>候補のレストラン</h2>
+                <p>該当するレストランを選択してください:</p>
                 <div id="candidates-list"></div>
             </div>
 
-            <div id="book-info-section" class="section hidden">
-                <h2>書籍情報</h2>
-                <div id="book-info"></div>
-                <button id="compare-prices-btn" onclick="comparePrices()" class="primary-btn">価格を比較する</button>
+            <div id="restaurant-info-section" class="section hidden">
+                <h2>レストラン情報</h2>
+                <div id="restaurant-info"></div>
+                <button id="compare-prices-btn" onclick="comparePrices()" class="primary-btn">価格・予約情報を比較する</button>
             </div>
 
             <div id="price-comparison-section" class="section hidden">
-                <h2>価格比較</h2>
+                <h2>価格・予約情報比較</h2>
                 <div id="price-comparison-table"></div>
             </div>
 

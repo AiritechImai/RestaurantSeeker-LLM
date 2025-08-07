@@ -3,7 +3,7 @@ const API_BASE_URL = 'http://localhost:5003';
 let selectedISBN = null;
 let currentBookInfo = null;
 
-async function searchBooks() {
+async function searchRestaurants() {
     const query = document.getElementById('search-input').value.trim();
     if (!query) {
         showError('検索クエリを入力してください');
@@ -213,7 +213,7 @@ function showLoading(show) {
 
 function hideAllSections() {
     document.getElementById('candidates-section').classList.add('hidden');
-    document.getElementById('book-info-section').classList.add('hidden');
+    document.getElementById('restaurant-info-section').classList.add('hidden');
     document.getElementById('price-comparison-section').classList.add('hidden');
     document.getElementById('error-section').classList.add('hidden');
 }
@@ -234,6 +234,6 @@ function resetSearch() {
 document.getElementById('search-input').addEventListener('keypress', function(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        searchBooks();
+        searchRestaurants();
     }
 });

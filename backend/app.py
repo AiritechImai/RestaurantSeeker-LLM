@@ -58,6 +58,8 @@ class RestaurantSearchService:
         location_dict = {
             '新宿': '新宿',
             'shinjuku': '新宿',
+            '歌舞伎町': '新宿',  # 歌舞伎町は新宿エリアに含める
+            'kabukicho': '新宿',
             '渋谷': '渋谷',
             'shibuya': '渋谷',
             '池袋': '池袋',
@@ -394,10 +396,10 @@ class RestaurantSearchService:
             print(f"[FALLBACK] Only {len(candidates)} API results, adding sample data for better variety")
             sample_results = self._get_sample_restaurants(search_params, seen_ids)
             # サンプル結果をAPIの結果の後に追加
-            candidates.extend(sample_results[:10])  # 最大10件のサンプルデータを追加
+            candidates.extend(sample_results)  # 制限なし
         
         print(f"*** TOTAL RESULTS: {len(candidates)} RESTAURANTS FOUND ***")
-        return candidates[:20]  # 最大20件に制限
+        return candidates  # 制限なし、全ての結果を返す
     
     def _get_sample_restaurants(self, search_params: Dict[str, Any], seen_ids: set) -> List[Dict[str, Any]]:
         """サンプルレストランデータの生成"""
@@ -583,7 +585,7 @@ class RestaurantSearchService:
         filtered_restaurants.sort(key=lambda x: x.get('match_score', 0), reverse=True)
         
         print(f"[SAMPLE] Found {len(filtered_restaurants)} matching restaurants")
-        return filtered_restaurants[:15]  # 最大15件
+        return filtered_restaurants  # 制限なし
     
     def _search_hotpepper(self, search_params: Dict[str, Any], seen_ids: set) -> List[Dict[str, Any]]:
         """ホットペッパーAPI検索"""
@@ -596,7 +598,7 @@ class RestaurantSearchService:
             params = {
                 'key': self.hotpepper_api_key,
                 'format': 'json',
-                'count': 50,  # より多くの結果を取得
+                'count': 100,  # より多くの結果を取得（APIの最大値）
             }
             
             # 地域の設定（段階的に検索）
@@ -625,6 +627,14 @@ class RestaurantSearchService:
                 params['keyword'] = f"{existing_keyword} {cuisine}".strip()
                 print(f"[HOTPEPPER] Using keyword search for cuisine: {cuisine}")
             
+            # デバッグ：フレンチの場合は一時的にキーワード検索を使用
+            if cuisine == 'フレンチ':
+                if 'genre' in params:
+                    del params['genre']
+                existing_keyword = params.get('keyword', '')
+                params['keyword'] = f"{existing_keyword} フレンチ".strip()
+                print(f"[HOTPEPPER] DEBUG: Using keyword search for French cuisine")
+            
             # 予算の設定
             budget = search_params.get('budget')
             if budget:
@@ -637,61 +647,111 @@ class RestaurantSearchService:
             
             # 段階的検索の実行
             restaurants = []
-            shops = []
+            all_shops = []
             
-            # 1回目の検索実行
-            print(f"[HOTPEPPER] Request params (1st attempt): {params}")
+            # 複数ページの結果を取得
+            max_pages = 3  # 最大3ページ分取得
+            for page in range(max_pages):
+                page_params = params.copy()
+                page_params['start'] = page * 100 + 1  # 開始位置を設定
+                
+                print(f"[HOTPEPPER] Request params (page {page + 1}): {page_params}")
+                
+                response = requests.get(self.hotpepper_api, params=page_params, timeout=Config.REQUEST_TIMEOUT)
+                print(f"[HOTPEPPER] Page {page + 1} response status: {response.status_code}")
+                
+                if response.status_code != 200:
+                    print(f"[HOTPEPPER] HTTP Error on page {page + 1}: {response.status_code} - {response.text}")
+                    if page == 0:  # 1ページ目が失敗した場合のみエラー
+                        return []
+                    else:
+                        break  # 2ページ目以降の失敗は継続
+                
+                data = response.json()
+                results = data.get('results', {})
+                shops = results.get('shop', [])
+                available_count = results.get('results_available', 0)
+                
+                print(f"[HOTPEPPER] Page {page + 1} - Raw shop count: {len(shops)}")
+                print(f"  - Available count: {available_count}")
+                print(f"  - Returned count: {results.get('results_returned', 'N/A')}")
+                print(f"  - Start position: {results.get('results_start', 'N/A')}")
+                
+                if page == 0 and shops:
+                    # 最初の5件のジャンル情報を詳細表示
+                    print(f"[HOTPEPPER] First 5 shops genre info:")
+                    for i, shop in enumerate(shops[:5]):
+                        shop_name = shop.get('name', 'Unknown')
+                        shop_genre = shop.get('genre', {})
+                        genre_code = shop_genre.get('code', 'N/A')
+                        genre_name = shop_genre.get('name', 'N/A')
+                        print(f"  {i+1}. {shop_name} | {genre_code}: {genre_name}")
+                
+                all_shops.extend(shops)
+                
+                # これ以上結果がない場合は終了
+                if len(shops) == 0 or len(all_shops) >= available_count:
+                    break
             
-            response = requests.get(self.hotpepper_api, params=params, timeout=Config.REQUEST_TIMEOUT)
-            print(f"[HOTPEPPER] Response status: {response.status_code}")
-            
-            if response.status_code != 200:
-                print(f"[HOTPEPPER] HTTP Error: {response.status_code} - {response.text}")
-                return []
-            
-            data = response.json()
-            results = data.get('results', {})
-            shops = results.get('shop', [])
-            print(f"[HOTPEPPER] 1st attempt - Raw shop count: {len(shops)}")
-            
-            # 1回目で結果が少ない場合、2回目の検索を試行
-            if len(shops) < 5 and location:
+            # フォールバック検索（1ページ目で結果が少ない場合）
+            if len(all_shops) < 5 and location:
                 print("[HOTPEPPER] Few results in 1st attempt, trying broader search...")
                 
                 # 2回目：キーワード検索で再試行
                 fallback_params = params.copy()
+                fallback_params['start'] = 1
                 
                 # middle_areaを削除してキーワード検索に変更
                 if 'middle_area' in fallback_params:
                     del fallback_params['middle_area']
                 fallback_params['keyword'] = location
                 
-                print(f"[HOTPEPPER] Request params (2nd attempt): {fallback_params}")
+                print(f"[HOTPEPPER] Request params (fallback): {fallback_params}")
                 
                 fallback_response = requests.get(self.hotpepper_api, params=fallback_params, timeout=Config.REQUEST_TIMEOUT)
                 if fallback_response.status_code == 200:
                     fallback_data = fallback_response.json()
                     fallback_results = fallback_data.get('results', {})
                     fallback_shops = fallback_results.get('shop', [])
-                    print(f"[HOTPEPPER] 2nd attempt - Raw shop count: {len(fallback_shops)}")
+                    print(f"[HOTPEPPER] Fallback - Raw shop count: {len(fallback_shops)}")
                     
                     # より多くの結果が得られた場合は2回目の結果を使用
-                    if len(fallback_shops) > len(shops):
-                        shops = fallback_shops
-                        print("[HOTPEPPER] Using 2nd attempt results")
+                    if len(fallback_shops) > len(all_shops):
+                        all_shops = fallback_shops
+                        print("[HOTPEPPER] Using fallback results")
             
-            print(f"[HOTPEPPER] Final shop count: {len(shops)}")
+            print(f"[HOTPEPPER] Total shop count from all pages: {len(all_shops)}")
             
-            for shop in shops:
+            for shop in all_shops:
                 restaurant_id = f"hotpepper_{shop.get('id')}"
                 
                 if restaurant_id not in seen_ids:
+                    # 料理ジャンル情報を取得
+                    shop_genre = shop.get('genre', {}).get('name', '')
+                    shop_genre_code = shop.get('genre', {}).get('code', '')
+                    cuisine = search_params.get('cuisine', '')
+                    
+                    print(f"[HOTPEPPER] Shop: {shop.get('name', '')} | Genre: {shop_genre} ({shop_genre_code})")
+                    
+                    # ジャンルフィルタリング：指定したジャンルと一致するかチェック
+                    genre_match = True
+                    if cuisine:
+                        # 指定したジャンルコードと一致するかチェック
+                        expected_genre_code = Config.HOTPEPPER_GENRE_CODES.get(cuisine)
+                        if expected_genre_code and shop_genre_code != expected_genre_code:
+                            # ジャンル名での部分マッチもチェック
+                            if cuisine not in shop_genre and shop_genre not in cuisine:
+                                genre_match = False
+                                print(f"[HOTPEPPER] FILTERED OUT: Expected {cuisine} ({expected_genre_code}), got {shop_genre} ({shop_genre_code})")
+                    
+                    # ジャンルが一致しない場合はスキップ
+                    if not genre_match:
+                        continue
+                    
                     # マッチスコア計算
                     match_score = 10  # 基本スコア（API結果なので高い）
                     
                     # 料理ジャンルのマッチング
-                    shop_genre = shop.get('genre', {}).get('name', '')
-                    cuisine = search_params.get('cuisine', '')
                     if cuisine and cuisine in shop_genre:
                         match_score += 10
                     
@@ -729,6 +789,9 @@ class RestaurantSearchService:
                     
                     restaurants.append(restaurant)
                     seen_ids.add(restaurant_id)
+                    print(f"[HOTPEPPER] ADDED: {shop.get('name', '')} | Genre: {shop_genre}")
+            
+            print(f"[HOTPEPPER] After genre filtering: {len(restaurants)} restaurants")
             
             # マッチスコア順にソート
             restaurants.sort(key=lambda x: x.get('match_score', 0), reverse=True)
@@ -1030,6 +1093,43 @@ def debug_routes():
     for route in routes:
         print(f"  {route['path']} -> {route['methods']}")
     return jsonify({"routes": routes})
+
+@app.route('/debug-genres', methods=['GET'])
+def debug_genres():
+    """ホットペッパーAPIのジャンル一覧を取得"""
+    if not restaurant_service.hotpepper_api_key:
+        return jsonify({"error": "HotPepper API key not configured"}), 400
+    
+    try:
+        # ジャンルマスターAPI呼び出し
+        genre_api_url = 'http://webservice.recruit.co.jp/hotpepper/genre/v1/'
+        params = {
+            'key': restaurant_service.hotpepper_api_key,
+            'format': 'json'
+        }
+        
+        response = requests.get(genre_api_url, params=params, timeout=Config.REQUEST_TIMEOUT)
+        response.raise_for_status()
+        
+        data = response.json()
+        genres = data.get('results', {}).get('genre', [])
+        
+        print("*** ホットペッパーAPI ジャンル一覧 ***")
+        genre_mapping = {}
+        for genre in genres:
+            code = genre.get('code', '')
+            name = genre.get('name', '')
+            genre_mapping[code] = name
+            print(f"  {code}: {name}")
+        
+        return jsonify({
+            "genre_count": len(genres),
+            "genres": genre_mapping
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Genre debug error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     print("=" * 50)

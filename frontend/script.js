@@ -1,7 +1,7 @@
 const API_BASE_URL = 'http://localhost:5003';
 
-let selectedISBN = null;
-let currentBookInfo = null;
+let selectedRestaurantId = null;
+let currentRestaurantInfo = null;
 
 async function searchRestaurants() {
     const query = document.getElementById('search-input').value.trim();
@@ -25,17 +25,12 @@ async function searchRestaurants() {
         const data = await response.json();
         showLoading(false);
 
-        if (data.status === 'isbn_confirmed') {
-            // ISBN確定の場合、書籍情報を表示
-            selectedISBN = data.isbn;
-            currentBookInfo = data.book_info;
-            displayBookInfo(data.book_info);
-        } else if (data.status === 'candidates_found') {
-            // 候補が見つかった場合、候補リストを表示
-            displayCandidates(data.candidates);
+        if (data.status === 'restaurants_found') {
+            // レストランが見つかった場合、候補リストを表示
+            displayCandidates(data.restaurants);
         } else {
             // 結果が見つからない場合
-            showError(data.message || '該当する書籍が見つかりませんでした');
+            showError(data.message || '該当するレストランが見つかりませんでした');
         }
 
     } catch (error) {
@@ -55,19 +50,29 @@ function displayCandidates(candidates) {
         candidateDiv.className = 'candidate-item';
         candidateDiv.onclick = () => selectCandidate(candidate, candidateDiv);
         
+        // 評価を星で表示
+        const stars = '★'.repeat(Math.floor(candidate.rating || 0)) + '☆'.repeat(5 - Math.floor(candidate.rating || 0));
+        
+        // 特徴をタグとして表示
+        const featuresHTML = candidate.features ? 
+            candidate.features.map(feature => `<span class="feature-tag">${feature}</span>`).join('') : '';
+        
         candidateDiv.innerHTML = `
-            <div class="book-display">
-                <div class="book-cover">
-                    ${candidate.cover_image ? 
-                        `<img src="${candidate.cover_image}" alt="書影" onerror="this.style.display='none'">` : 
-                        '<div style="width:80px;height:120px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:4px;"><span style="font-size:12px;color:#999;">書影なし</span></div>'
+            <div class="restaurant-display">
+                <div class="restaurant-image">
+                    ${candidate.image ? 
+                        `<img src="${candidate.image}" alt="レストラン画像" onerror="this.style.display='none'">` : 
+                        '<div style="width:120px;height:90px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:4px;"><span style="font-size:12px;color:#999;">画像なし</span></div>'
                     }
                 </div>
-                <div class="book-details">
-                    <h3>${candidate.title}</h3>
-                    <p><strong>著者:</strong> ${candidate.author}</p>
-                    <p><strong>出版社:</strong> ${candidate.publisher || '不明'}</p>
-                    <p><strong>ISBN:</strong> ${candidate.isbn}</p>
+                <div class="restaurant-details">
+                    <h3>${candidate.name}</h3>
+                    <p><strong>料理ジャンル:</strong> ${candidate.cuisine}</p>
+                    <p><strong>エリア:</strong> ${candidate.location}</p>
+                    <p><strong>評価:</strong> ${stars} ${candidate.rating || '-'}</p>
+                    <p><strong>価格帯:</strong> ${candidate.price_range || '-'}</p>
+                    <p class="restaurant-description">${candidate.description || ''}</p>
+                    <div class="features">${featuresHTML}</div>
                 </div>
             </div>
         `;
@@ -87,45 +92,57 @@ function selectCandidate(candidate, element) {
     // 新しい候補を選択状態に
     element.classList.add('selected');
     
-    selectedISBN = candidate.isbn;
-    currentBookInfo = candidate;
+    selectedRestaurantId = candidate.id;
+    currentRestaurantInfo = candidate;
     
-    // 書籍情報セクションを表示
+    // レストラン情報セクションを表示
     setTimeout(() => {
-        displayBookInfo(candidate);
+        displayRestaurantInfo(candidate);
     }, 300);
 }
 
-function displayBookInfo(bookInfo) {
-    const bookInfoSection = document.getElementById('book-info-section');
-    const bookInfoDiv = document.getElementById('book-info');
+function displayRestaurantInfo(restaurantInfo) {
+    const restaurantInfoSection = document.getElementById('restaurant-info-section');
+    const restaurantInfoDiv = document.getElementById('restaurant-info');
     
-    bookInfoDiv.innerHTML = `
-        <div class="book-display">
-            <div class="book-cover">
-                ${bookInfo.cover_image ? 
-                    `<img src="${bookInfo.cover_image}" alt="書影" onerror="this.style.display='none'">` : 
-                    '<div style="width:120px;height:180px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:6px;"><span style="font-size:14px;color:#999;">書影なし</span></div>'
+    // 評価を星で表示
+    const stars = '★'.repeat(Math.floor(restaurantInfo.rating || 0)) + '☆'.repeat(5 - Math.floor(restaurantInfo.rating || 0));
+    
+    // 特徴をタグとして表示
+    const featuresHTML = restaurantInfo.features ? 
+        restaurantInfo.features.map(feature => `<span class="feature-tag">${feature}</span>`).join('') : '';
+    
+    restaurantInfoDiv.innerHTML = `
+        <div class="restaurant-display">
+            <div class="restaurant-image">
+                ${restaurantInfo.image ? 
+                    `<img src="${restaurantInfo.image}" alt="レストラン画像" onerror="this.style.display='none'">` : 
+                    '<div style="width:200px;height:150px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:6px;"><span style="font-size:14px;color:#999;">画像なし</span></div>'
                 }
             </div>
-            <div class="book-details">
-                <h3>${bookInfo.title || '書名不明'}</h3>
-                <p><strong>著者:</strong> ${bookInfo.author || '不明'}</p>
-                <p><strong>出版社:</strong> ${bookInfo.publisher || '不明'}</p>
-                <p><strong>ISBN:</strong> ${selectedISBN}</p>
+            <div class="restaurant-details">
+                <h3>${restaurantInfo.name || 'レストラン名不明'}</h3>
+                <p><strong>料理ジャンル:</strong> ${restaurantInfo.cuisine || '不明'}</p>
+                <p><strong>エリア:</strong> ${restaurantInfo.location || '不明'}</p>
+                <p><strong>住所:</strong> ${restaurantInfo.address || '不明'}</p>
+                <p><strong>電話番号:</strong> ${restaurantInfo.phone || '不明'}</p>
+                <p><strong>評価:</strong> ${stars} ${restaurantInfo.rating || '-'}</p>
+                <p><strong>価格帯:</strong> ${restaurantInfo.price_range || '-'}</p>
+                <p class="restaurant-description">${restaurantInfo.description || ''}</p>
+                <div class="features">${featuresHTML}</div>
             </div>
         </div>
     `;
     
-    bookInfoSection.classList.remove('hidden');
+    restaurantInfoSection.classList.remove('hidden');
     
     // 候補セクションを隠す
     document.getElementById('candidates-section').classList.add('hidden');
 }
 
 async function comparePrices() {
-    if (!selectedISBN) {
-        showError('ISBNが選択されていません');
+    if (!selectedRestaurantId) {
+        showError('レストランが選択されていません');
         return;
     }
 
@@ -137,7 +154,7 @@ async function comparePrices() {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ isbn: selectedISBN }),
+            body: JSON.stringify({ restaurant_id: selectedRestaurantId }),
         });
 
         const data = await response.json();
@@ -146,7 +163,7 @@ async function comparePrices() {
         if (data.price_comparison && data.price_comparison.length > 0) {
             displayPriceComparison(data.price_comparison);
         } else {
-            showError('価格情報が見つかりませんでした');
+            showError('価格・予約情報が見つかりませんでした');
         }
 
     } catch (error) {
@@ -164,11 +181,9 @@ function displayPriceComparison(priceData) {
             <thead>
                 <tr>
                     <th>サイト</th>
-                    <th>本体価格</th>
-                    <th>送料</th>
-                    <th>合計金額</th>
-                    <th>コンディション</th>
-                    <th>在庫状況</th>
+                    <th>価格帯</th>
+                    <th>予約可否</th>
+                    <th>特徴</th>
                     <th>リンク</th>
                 </tr>
             </thead>
@@ -176,19 +191,20 @@ function displayPriceComparison(priceData) {
     `;
     
     priceData.forEach(item => {
-        const rowClass = item.is_cheapest ? 'cheapest' : '';
-        const stockClass = item.in_stock ? 'in-stock' : 'out-of-stock';
-        const stockText = item.in_stock ? '在庫あり' : '在庫なし';
+        const reservationClass = item.reservation_available ? 'reservation-available' : 'reservation-unavailable';
+        const reservationText = item.reservation_available ? '予約可' : '情報のみ';
+        
+        // 特徴をタグとして表示
+        const featuresHTML = item.features ? 
+            item.features.map(feature => `<span class="site-feature-tag">${feature}</span>`).join('') : '';
         
         tableHTML += `
-            <tr class="${rowClass}">
+            <tr>
                 <td><strong>${item.site}</strong></td>
-                <td class="price">¥${item.price.toLocaleString()}</td>
-                <td>¥${item.shipping.toLocaleString()}</td>
-                <td class="total-price">¥${item.total_price.toLocaleString()}</td>
-                <td><span class="condition">${item.condition}</span></td>
-                <td class="${stockClass}">${stockText}</td>
-                <td><a href="${item.url}" target="_blank" class="site-link">商品ページ</a></td>
+                <td class="price-info">${item.price_info || '-'}</td>
+                <td class="${reservationClass}">${reservationText}</td>
+                <td class="features">${featuresHTML}</td>
+                <td><a href="${item.url}" target="_blank" class="site-link">詳細を見る</a></td>
             </tr>
         `;
     });
@@ -225,8 +241,8 @@ function showError(message) {
 
 function resetSearch() {
     document.getElementById('search-input').value = '';
-    selectedISBN = null;
-    currentBookInfo = null;
+    selectedRestaurantId = null;
+    currentRestaurantInfo = null;
     hideAllSections();
 }
 

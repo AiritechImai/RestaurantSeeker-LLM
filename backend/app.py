@@ -9,6 +9,7 @@ import re
 from typing import Dict, List, Optional, Any
 import logging
 import sys
+from config import Config
 
 app = Flask(__name__)
 CORS(app)
@@ -20,15 +21,17 @@ sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 1)  # Line buffered
 
 class RestaurantSearchService:
     def __init__(self):
-        self.llm_endpoint = "http://localhost:11434/api/generate"
+        self.llm_endpoint = Config.LLM_ENDPOINT
         # 飲食店検索用API設定
-        self.gurunavi_api = "https://api.gnavi.co.jp/RestSearchAPI/v3/"
-        self.hotpepper_api = "http://webservice.recruit.co.jp/hotpepper/gourmet/v1/"
-        self.tabelog_api = None  # 食べログは公開APIなし（スクレイピング用）
+        self.hotpepper_api = Config.HOTPEPPER_API_URL
+        self.tabelog_api = Config.TABELOG_API_URL
         
-        # API キー（実際の使用時は環境変数等で管理）
-        self.gurunavi_api_key = None
-        self.hotpepper_api_key = None
+        # API キー
+        self.hotpepper_api_key = Config.HOTPEPPER_API_KEY
+        self.tabelog_api_key = Config.TABELOG_API_KEY
+        
+        print(f"[INIT] HotPepper API Key: {'SET' if self.hotpepper_api_key else 'NOT SET'}")
+        print(f"[INIT] Tabelog API Key: {'SET' if self.tabelog_api_key else 'NOT SET'}")
         
     def query_llm(self, user_query: str) -> Dict[str, Any]:
         # まず直接辞書マッチングを試行
@@ -303,7 +306,7 @@ class RestaurantSearchService:
 - 日本のレストランを優先してください"""
 
             payload = {
-                "model": "gpt-oss-20b",
+                "model": Config.LLM_MODEL,
                 "prompt": prompt,
                 "stream": False,
                 "options": {
@@ -371,19 +374,24 @@ class RestaurantSearchService:
         
         print(f"[SEARCH] Searching restaurants with params: {search_params}", flush=True)
         
-        # Google Places API風の検索（サンプルデータ使用）
-        sample_results = self._get_sample_restaurants(search_params, seen_ids)
-        candidates.extend(sample_results)
-        
-        # ホットペッパーAPIの結果（サンプル）
+        # ホットペッパーAPIの結果を優先
         if self.hotpepper_api_key:
             hotpepper_results = self._search_hotpepper(search_params, seen_ids)
             candidates.extend(hotpepper_results)
+            print(f"[HOTPEPPER] Added {len(hotpepper_results)} results")
         
-        # ぐるなびAPIの結果（サンプル）
-        if self.gurunavi_api_key:
-            gurunavi_results = self._search_gurunavi(search_params, seen_ids)
-            candidates.extend(gurunavi_results)
+        # 食べログAPIの結果
+        if self.tabelog_api_key:
+            tabelog_results = self._search_tabelog(search_params, seen_ids)
+            candidates.extend(tabelog_results)
+            print(f"[TABELOG] Added {len(tabelog_results)} results")
+        
+        # HotPepper APIの結果が少ない場合、サンプルデータで補完
+        if len(candidates) < 5:
+            print(f"[FALLBACK] Only {len(candidates)} API results, adding sample data for better variety")
+            sample_results = self._get_sample_restaurants(search_params, seen_ids)
+            # サンプル結果をAPIの結果の後に追加
+            candidates.extend(sample_results[:10])  # 最大10件のサンプルデータを追加
         
         print(f"*** TOTAL RESULTS: {len(candidates)} RESTAURANTS FOUND ***")
         return candidates[:20]  # 最大20件に制限
@@ -575,13 +583,129 @@ class RestaurantSearchService:
         return filtered_restaurants[:15]  # 最大15件
     
     def _search_hotpepper(self, search_params: Dict[str, Any], seen_ids: set) -> List[Dict[str, Any]]:
-        """ホットペッパーAPI検索（サンプル実装）"""
-        # 実際の実装ではAPIキーを使用してリクエスト
-        return []
+        """ホットペッパーAPI検索"""
+        if not self.hotpepper_api_key:
+            print("[HOTPEPPER] API key not configured")
+            return []
+        
+        try:
+            # API リクエストパラメータの構築
+            params = {
+                'key': self.hotpepper_api_key,
+                'format': 'json',
+                'count': 50,  # より多くの結果を取得
+            }
+            
+            # 地域の設定（より広範囲で検索）
+            location = search_params.get('location')
+            if location and location in Config.HOTPEPPER_AREA_CODES:
+                params['middle_area'] = Config.HOTPEPPER_AREA_CODES[location]
+                print(f"[HOTPEPPER] Area: {location} -> {params['middle_area']}")
+            elif location:
+                # エリアコードにない場合はキーワード検索
+                params['keyword'] = location
+                print(f"[HOTPEPPER] Using keyword search for location: {location}")
+            
+            # 料理ジャンルの設定
+            cuisine = search_params.get('cuisine')
+            if cuisine and cuisine in Config.HOTPEPPER_GENRE_CODES:
+                params['genre'] = Config.HOTPEPPER_GENRE_CODES[cuisine]
+                print(f"[HOTPEPPER] Genre: {cuisine} -> {params['genre']}")
+            elif cuisine:
+                # ジャンルコードにない場合はキーワードに追加
+                existing_keyword = params.get('keyword', '')
+                params['keyword'] = f"{existing_keyword} {cuisine}".strip()
+                print(f"[HOTPEPPER] Using keyword search for cuisine: {cuisine}")
+            
+            # 予算の設定
+            budget = search_params.get('budget')
+            if budget:
+                if budget == 'low':
+                    params['budget'] = 'B005'  # ~2000円
+                elif budget == 'medium':
+                    params['budget'] = 'B003'  # 3000~4000円
+                elif budget == 'high':
+                    params['budget'] = 'B001'  # 4000円~
+            
+            print(f"[HOTPEPPER] Request params: {params}")
+            
+            response = requests.get(self.hotpepper_api, params=params, timeout=Config.REQUEST_TIMEOUT)
+            response.raise_for_status()
+            
+            data = response.json()
+            shops = data.get('results', {}).get('shop', [])
+            
+            restaurants = []
+            for shop in shops:
+                restaurant_id = f"hotpepper_{shop.get('id')}"
+                
+                if restaurant_id not in seen_ids:
+                    # マッチスコア計算
+                    match_score = 10  # 基本スコア（API結果なので高い）
+                    
+                    # 料理ジャンルのマッチング
+                    shop_genre = shop.get('genre', {}).get('name', '')
+                    cuisine = search_params.get('cuisine', '')
+                    if cuisine and cuisine in shop_genre:
+                        match_score += 10
+                    
+                    # 地域のマッチング
+                    shop_area = shop.get('middle_area', {}).get('name', '')
+                    location = search_params.get('location', '')
+                    if location and location in shop_area:
+                        match_score += 5
+                    
+                    restaurant = {
+                        'id': restaurant_id,
+                        'name': shop.get('name', ''),
+                        'cuisine': shop_genre,
+                        'location': shop_area,
+                        'address': shop.get('address', ''),
+                        'phone': shop.get('tel', ''),
+                        'rating': None,  # ホットペッパーは評価なし
+                        'price_range': shop.get('budget', {}).get('name', ''),
+                        'description': shop.get('catch', ''),
+                        'image': shop.get('photo', {}).get('pc', {}).get('l', ''),
+                        'features': [],
+                        'match_score': match_score,
+                        'source': 'hotpepper'
+                    }
+                    
+                    # 特徴の追加
+                    if shop.get('private_room', '') == 'あり':
+                        restaurant['features'].append('個室あり')
+                    if shop.get('parking', '') == 'あり':
+                        restaurant['features'].append('駐車場')
+                    if shop.get('card', '') == '利用可':
+                        restaurant['features'].append('クレジット可')
+                    if shop.get('non_smoking', '') == '全面禁煙':
+                        restaurant['features'].append('禁煙')
+                    
+                    restaurants.append(restaurant)
+                    seen_ids.add(restaurant_id)
+            
+            # マッチスコア順にソート
+            restaurants.sort(key=lambda x: x.get('match_score', 0), reverse=True)
+            
+            print(f"[HOTPEPPER] Found {len(restaurants)} restaurants")
+            return restaurants
+            
+        except requests.RequestException as e:
+            print(f"[HOTPEPPER] API request error: {e}")
+            return []
+        except Exception as e:
+            print(f"[HOTPEPPER] Error: {e}")
+            return []
     
-    def _search_gurunavi(self, search_params: Dict[str, Any], seen_ids: set) -> List[Dict[str, Any]]:
-        """ぐるなびAPI検索（サンプル実装）"""  
-        # 実際の実装ではAPIキーを使用してリクエスト
+    def _search_tabelog(self, search_params: Dict[str, Any], seen_ids: set) -> List[Dict[str, Any]]:
+        """食べログAPI検索（サンプル実装）"""
+        if not self.tabelog_api_key:
+            print("[TABELOG] API key not configured")
+            return []
+        
+        # 食べログAPIの実装は要確認
+        # 実際のAPIエンドポイントとパラメータが不明なため、現在はサンプル実装
+        print("[TABELOG] API integration pending - sample data returned")
         return []
     
     def get_restaurant_prices(self, restaurant_id: str) -> List[Dict[str, Any]]:
@@ -640,6 +764,36 @@ class RestaurantSearchService:
     def _get_hotpepper_price(self, restaurant_id: str) -> Optional[Dict[str, Any]]:
         """ホットペッパー価格情報取得"""
         try:
+            # ホットペッパーのレストランIDから実際の店舗情報を取得
+            if restaurant_id.startswith('hotpepper_'):
+                shop_id = restaurant_id.replace('hotpepper_', '')
+                
+                if self.hotpepper_api_key:
+                    # 実際のAPIリクエスト
+                    params = {
+                        'key': self.hotpepper_api_key,
+                        'id': shop_id,
+                        'format': 'json'
+                    }
+                    
+                    response = requests.get(self.hotpepper_api, params=params, timeout=Config.REQUEST_TIMEOUT)
+                    response.raise_for_status()
+                    
+                    data = response.json()
+                    shop = data.get('results', {}).get('shop', [])
+                    
+                    if shop:
+                        shop_data = shop[0] if isinstance(shop, list) else shop
+                        
+                        return {
+                            "site": "ホットペッパー",
+                            "price_info": shop_data.get('budget', {}).get('name', '価格情報なし'),
+                            "reservation_available": True,
+                            "url": shop_data.get('urls', {}).get('pc', ''),
+                            "features": ["即予約", "ポイント付与", "クーポン", "写真豊富"]
+                        }
+            
+            # フォールバック（サンプルデータ）
             price_ranges = ["¥1,500-2,500", "¥2,500-3,500", "¥3,500-5,000", "¥5,000-7,000"]
             restaurant_int = hash(restaurant_id) % len(price_ranges)
             price_range = price_ranges[restaurant_int]

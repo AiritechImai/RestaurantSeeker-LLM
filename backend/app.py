@@ -399,7 +399,129 @@ class RestaurantSearchService:
             candidates.extend(sample_results)  # 制限なし
         
         print(f"*** TOTAL RESULTS: {len(candidates)} RESTAURANTS FOUND ***")
-        return candidates  # 制限なし、全ての結果を返す
+        
+        # 上位50件にフィルタリング
+        filtered_candidates = self._filter_top_restaurants(candidates, search_params)
+        print(f"*** FILTERED TO TOP: {len(filtered_candidates)} RESTAURANTS ***")
+        
+        return filtered_candidates
+    
+    def _calculate_match_score(self, shop: Dict[str, Any], search_params: Dict[str, Any]) -> float:
+        """レストランのマッチスコアを計算"""
+        match_score = 10.0  # 基本スコア（API結果なので高い）
+        
+        # 料理ジャンルのマッチング（重要度：高）
+        shop_genre = shop.get('genre', {}).get('name', '')
+        cuisine = search_params.get('cuisine', '')
+        if cuisine and cuisine in shop_genre:
+            match_score += 15.0
+        
+        # 地域のマッチング（重要度：高）
+        shop_area = shop.get('middle_area', {}).get('name', '')
+        location = search_params.get('location', '')
+        if location and location in shop_area:
+            match_score += 12.0
+        elif location:
+            # 住所での部分マッチも考慮
+            shop_address = shop.get('address', '')
+            if location in shop_address:
+                match_score += 8.0
+        
+        # カテゴリ/シチュエーションのマッチング（重要度：中）
+        category = search_params.get('category', '')
+        if category:
+            # 店名や説明文にカテゴリ関連キーワードが含まれるかチェック
+            shop_name = shop.get('name', '').lower()
+            shop_catch = shop.get('catch', '').lower()
+            category_keywords = {
+                'デート': ['デート', '記念日', 'カップル', '個室', '夜景'],
+                '接待': ['接待', '宴会', '個室', '高級', 'コース'],
+                '飲み会': ['飲み会', '宴会', '飲み放題', 'パーティ', '歓送迎会'],
+                '家族': ['家族', 'ファミリー', '子供', 'キッズ'],
+                '一人': ['一人', 'カウンター', 'ひとり', 'bar'],
+                'ランチ': ['ランチ', 'lunch', 'お昼', '定食'],
+                'ディナー': ['ディナー', 'dinner', 'コース', '夜'],
+                '高級': ['高級', 'luxury', 'fine', 'premium'],
+                '安い': ['安い', '格安', 'リーズナブル', 'コスパ'],
+                '個室': ['個室', 'private', 'プライベート']
+            }
+            
+            if category in category_keywords:
+                for keyword in category_keywords[category]:
+                    if keyword in shop_name or keyword in shop_catch:
+                        match_score += 5.0
+                        break
+        
+        # 予算のマッチング（重要度：中）
+        budget = search_params.get('budget', '')
+        shop_budget = shop.get('budget', {}).get('name', '')
+        if budget and shop_budget:
+            # 予算レベルの対応チェック
+            if budget == 'low' and any(keyword in shop_budget for keyword in ['1000', '2000', '安い', 'リーズナブル']):
+                match_score += 6.0
+            elif budget == 'medium' and any(keyword in shop_budget for keyword in ['3000', '4000', '5000']):
+                match_score += 6.0
+            elif budget == 'high' and any(keyword in shop_budget for keyword in ['6000', '8000', '1万', '高級']):
+                match_score += 6.0
+        
+        # 設備・特徴によるボーナス（重要度：低）
+        if shop.get('private_room', '') == 'あり':
+            match_score += 2.0
+        if shop.get('card', '') == '利用可':
+            match_score += 1.0
+        if shop.get('parking', '') == 'あり':
+            match_score += 1.0
+        if shop.get('non_smoking', '') == '全面禁煙':
+            match_score += 1.0
+        
+        return round(match_score, 1)
+    
+    def _filter_top_restaurants(self, candidates: List[Dict[str, Any]], search_params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """上位50件のレストランをフィルタリング"""
+        if len(candidates) <= 50:
+            return candidates
+        
+        # 各レストランに総合スコアを計算
+        for restaurant in candidates:
+            total_score = 0.0
+            
+            # マッチスコア（重み：60%）
+            match_score = restaurant.get('match_score', 0)
+            total_score += match_score * 0.6
+            
+            # 評価スコア（重み：40%）
+            rating = restaurant.get('rating', 0)
+            if rating and rating > 0:
+                # 5点満点の評価を100点満点に変換
+                rating_score = (rating / 5.0) * 100
+                total_score += rating_score * 0.4
+            else:
+                # 評価がない場合はやや減点（不確実性を考慮）
+                total_score += 60 * 0.4  # 平均的な評価（3.0/5.0相当）として扱う
+            
+            # ソース別のボーナス（信頼性を考慮）
+            source = restaurant.get('source', '')
+            if source == 'hotpepper':
+                total_score += 5.0  # API結果は信頼性が高い
+            elif source == 'tabelog':
+                total_score += 3.0
+            else:
+                total_score += 0.0  # サンプルデータは追加ボーナスなし
+            
+            restaurant['total_score'] = round(total_score, 1)
+        
+        # 総合スコア順にソートして上位50件を取得
+        candidates.sort(key=lambda x: x.get('total_score', 0), reverse=True)
+        top_candidates = candidates[:50]
+        
+        print(f"[FILTER] Top 10 restaurants by score:")
+        for i, restaurant in enumerate(top_candidates[:10]):
+            score = restaurant.get('total_score', 0)
+            match_score = restaurant.get('match_score', 0)
+            rating = restaurant.get('rating', 'N/A')
+            print(f"  {i+1}. {restaurant.get('name', 'Unknown')} | Score: {score} (Match: {match_score}, Rating: {rating})")
+        
+        return top_candidates
     
     def _get_sample_restaurants(self, search_params: Dict[str, Any], seen_ids: set) -> List[Dict[str, Any]]:
         """サンプルレストランデータの生成"""
@@ -578,6 +700,19 @@ class RestaurantSearchService:
                 restaurant_copy = restaurant.copy()
                 restaurant_copy['match_score'] = score
                 restaurant_copy['id'] = f"restaurant_{len(filtered_restaurants) + 1}"
+                
+                # サンプルデータに評価を追加（バリエーションを持たせる）
+                if 'rating' not in restaurant_copy or not restaurant_copy['rating']:
+                    # IDベースでランダムな評価を生成（再現性を保つため）
+                    rating_seed = hash(restaurant_copy['id']) % 100
+                    if score >= 15:  # 高スコアの店は高評価傾向
+                        restaurant_copy['rating'] = 3.5 + (rating_seed % 15) / 10  # 3.5-5.0
+                    elif score >= 10:  # 中スコアの店は中評価傾向  
+                        restaurant_copy['rating'] = 3.0 + (rating_seed % 20) / 10  # 3.0-5.0
+                    else:  # 低スコアの店は低評価傾向
+                        restaurant_copy['rating'] = 2.5 + (rating_seed % 25) / 10  # 2.5-5.0
+                    restaurant_copy['rating'] = round(restaurant_copy['rating'], 1)
+                
                 filtered_restaurants.append(restaurant_copy)
                 seen_ids.add(restaurant_copy['id'])
         
@@ -749,17 +884,10 @@ class RestaurantSearchService:
                         continue
                     
                     # マッチスコア計算
-                    match_score = 10  # 基本スコア（API結果なので高い）
+                    match_score = self._calculate_match_score(shop, search_params)
                     
-                    # 料理ジャンルのマッチング
-                    if cuisine and cuisine in shop_genre:
-                        match_score += 10
-                    
-                    # 地域のマッチング
+                    # 地域情報を取得
                     shop_area = shop.get('middle_area', {}).get('name', '')
-                    location = search_params.get('location', '')
-                    if location and location in shop_area:
-                        match_score += 5
                     
                     restaurant = {
                         'id': restaurant_id,

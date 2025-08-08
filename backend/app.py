@@ -476,28 +476,98 @@ class RestaurantSearchService:
         
         return round(match_score, 1)
     
+    def _estimate_rating_from_shop_data(self, shop: Dict[str, Any]) -> float:
+        """店舗データから評価を推定"""
+        base_rating = 3.0  # 基本評価
+        
+        # 設備・サービスによるボーナス
+        if shop.get('private_room', '') == 'あり':
+            base_rating += 0.3  # 個室あり
+        if shop.get('card', '') == '利用可':
+            base_rating += 0.2  # クレジットカード対応
+        if shop.get('parking', '') == 'あり':
+            base_rating += 0.2  # 駐車場あり
+        if shop.get('non_smoking', '') == '全面禁煙':
+            base_rating += 0.2  # 禁煙対応
+        if shop.get('wifi', '') == 'あり':
+            base_rating += 0.1  # WiFi完備
+        if shop.get('lunch', '') == 'あり':
+            base_rating += 0.1  # ランチ営業
+        
+        # 写真の質による評価（写真があることは店舗の品質指標）
+        photo = shop.get('photo', {})
+        if photo.get('pc', {}).get('l'):  # 大サイズ写真あり
+            base_rating += 0.2
+        elif photo.get('pc', {}).get('m'):  # 中サイズ写真あり
+            base_rating += 0.1
+        
+        # キャッチコピーの品質（文字数や内容で判断）
+        catch = shop.get('catch', '')
+        if catch:
+            if len(catch) > 20:  # 詳細なキャッチコピー
+                base_rating += 0.2
+            if any(keyword in catch for keyword in ['厳選', '最高', '極上', '特選', 'こだわり', '老舗']):
+                base_rating += 0.3
+        
+        # 予算帯による評価調整（高級店は基本的に品質が高い傾向）
+        budget = shop.get('budget', {}).get('name', '')
+        if budget:
+            if '8000' in budget or '1万' in budget or '10000' in budget:
+                base_rating += 0.4  # 高級店
+            elif '5000' in budget or '6000' in budget:
+                base_rating += 0.2  # 中級店
+            elif '2000' in budget or '3000' in budget:
+                base_rating += 0.1  # 手頃な価格帯
+        
+        # 営業時間の充実度（長時間営業は利便性が高い）
+        if shop.get('open', ''):
+            base_rating += 0.1
+        
+        # 住所の詳細度（住所が詳細なほど信頼性が高い）
+        address = shop.get('address', '')
+        if address and len(address) > 20:
+            base_rating += 0.1
+        
+        # 5.0を超えないよう制限
+        return round(min(base_rating, 5.0), 1)
+    
     def _filter_top_restaurants(self, candidates: List[Dict[str, Any]], search_params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """上位50件のレストランをフィルタリング"""
+        """上位50件のレストランをフィルタリング（高評価優先）"""
         if len(candidates) <= 50:
             return candidates
+        
+        # 高評価フィルタリング（4.0以上を優先）
+        high_rated = [r for r in candidates if r.get('rating', 0) >= 4.0]
+        medium_rated = [r for r in candidates if 3.5 <= r.get('rating', 0) < 4.0]
+        low_rated = [r for r in candidates if r.get('rating', 0) < 3.5]
+        
+        print(f"[FILTER] Rating distribution: High(4.0+): {len(high_rated)}, Medium(3.5-4.0): {len(medium_rated)}, Low(<3.5): {len(low_rated)}")
         
         # 各レストランに総合スコアを計算
         for restaurant in candidates:
             total_score = 0.0
             
-            # マッチスコア（重み：60%）
+            # マッチスコア（重み：50%）
             match_score = restaurant.get('match_score', 0)
-            total_score += match_score * 0.6
+            total_score += match_score * 0.5
             
-            # 評価スコア（重み：40%）
+            # 評価スコア（重み：50%）- 評価を重視
             rating = restaurant.get('rating', 0)
             if rating and rating > 0:
                 # 5点満点の評価を100点満点に変換
                 rating_score = (rating / 5.0) * 100
-                total_score += rating_score * 0.4
+                total_score += rating_score * 0.5
+                
+                # 高評価ボーナス
+                if rating >= 4.5:
+                    total_score += 15.0  # 4.5以上は特別ボーナス
+                elif rating >= 4.0:
+                    total_score += 10.0  # 4.0以上はボーナス
+                elif rating >= 3.5:
+                    total_score += 5.0   # 3.5以上は軽微なボーナス
             else:
-                # 評価がない場合はやや減点（不確実性を考慮）
-                total_score += 60 * 0.4  # 平均的な評価（3.0/5.0相当）として扱う
+                # 評価がない場合は平均的な評価として扱う
+                total_score += 60 * 0.5  # 平均的な評価（3.0/5.0相当）
             
             # ソース別のボーナス（信頼性を考慮）
             source = restaurant.get('source', '')
@@ -510,11 +580,27 @@ class RestaurantSearchService:
             
             restaurant['total_score'] = round(total_score, 1)
         
-        # 総合スコア順にソートして上位50件を取得
+        # 総合スコア順にソート
         candidates.sort(key=lambda x: x.get('total_score', 0), reverse=True)
-        top_candidates = candidates[:50]
         
-        print(f"[FILTER] Top 10 restaurants by score:")
+        # 高評価店を優先的に選択
+        selected = []
+        
+        # 1. 高評価店（4.0以上）から最大30件
+        high_rated_sorted = sorted(high_rated, key=lambda x: x.get('total_score', 0), reverse=True)
+        selected.extend(high_rated_sorted[:30])
+        
+        # 2. 残り枠を中評価・低評価から選択
+        remaining_slots = 50 - len(selected)
+        if remaining_slots > 0:
+            other_candidates = [r for r in candidates if r not in selected]
+            other_sorted = sorted(other_candidates, key=lambda x: x.get('total_score', 0), reverse=True)
+            selected.extend(other_sorted[:remaining_slots])
+        
+        # 最終的に総合スコア順でソート
+        top_candidates = sorted(selected, key=lambda x: x.get('total_score', 0), reverse=True)
+        
+        print(f"[FILTER] Top 10 restaurants by score (high rating priority):")
         for i, restaurant in enumerate(top_candidates[:10]):
             score = restaurant.get('total_score', 0)
             match_score = restaurant.get('match_score', 0)
@@ -813,14 +899,27 @@ class RestaurantSearchService:
                 print(f"  - Start position: {results.get('results_start', 'N/A')}")
                 
                 if page == 0 and shops:
-                    # 最初の5件のジャンル情報を詳細表示
-                    print(f"[HOTPEPPER] First 5 shops genre info:")
+                    # 最初の5件の詳細情報を表示
+                    print(f"[HOTPEPPER] First 5 shops detailed info:")
                     for i, shop in enumerate(shops[:5]):
                         shop_name = shop.get('name', 'Unknown')
                         shop_genre = shop.get('genre', {})
                         genre_code = shop_genre.get('code', 'N/A')
                         genre_name = shop_genre.get('name', 'N/A')
-                        print(f"  {i+1}. {shop_name} | {genre_code}: {genre_name}")
+                        
+                        # 評価関連のフィールドをチェック
+                        rating_fields = ['rating', 'score', 'evaluation', 'review', 'stars']
+                        rating_info = []
+                        for field in rating_fields:
+                            if field in shop and shop[field]:
+                                rating_info.append(f"{field}: {shop[field]}")
+                        
+                        rating_str = ', '.join(rating_info) if rating_info else 'No rating fields'
+                        print(f"  {i+1}. {shop_name} | {genre_code}: {genre_name} | {rating_str}")
+                        
+                        # 全フィールド一覧を表示（デバッグ用）
+                        if i == 0:  # 最初の店舗のみ
+                            print(f"    Available fields: {list(shop.keys())}")
                 
                 all_shops.extend(shops)
                 
@@ -896,7 +995,7 @@ class RestaurantSearchService:
                         'location': shop_area,
                         'address': shop.get('address', ''),
                         'phone': shop.get('tel', ''),
-                        'rating': None,  # ホットペッパーは評価なし
+                        'rating': self._estimate_rating_from_shop_data(shop),  # 店舗データから評価を推定
                         'price_range': shop.get('budget', {}).get('name', ''),
                         'description': shop.get('catch', ''),
                         'image': shop.get('photo', {}).get('pc', {}).get('l', ''),

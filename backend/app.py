@@ -9,6 +9,7 @@ import re
 from typing import Dict, List, Optional, Any
 import logging
 import sys
+import traceback
 from config import Config
 
 app = Flask(__name__)
@@ -31,7 +32,9 @@ class RestaurantSearchService:
         self.tabelog_api_key = Config.TABELOG_API_KEY
         
         print(f"[INIT] HotPepper API Key: {'SET' if self.hotpepper_api_key else 'NOT SET'}")
+        print(f"[INIT] HotPepper API Key (masked): {self.hotpepper_api_key[:4]}...{self.hotpepper_api_key[-4:] if self.hotpepper_api_key and len(self.hotpepper_api_key) > 8 else 'INVALID'}")
         print(f"[INIT] Tabelog API Key: {'SET' if self.tabelog_api_key else 'NOT SET'}")
+        print(f"[INIT] HotPepper URL: {self.hotpepper_api}")
         
     def query_llm(self, user_query: str) -> Dict[str, Any]:
         # まず直接辞書マッチングを試行
@@ -596,15 +599,20 @@ class RestaurantSearchService:
                 'count': 50,  # より多くの結果を取得
             }
             
-            # 地域の設定（より広範囲で検索）
+            # 地域の設定（段階的に検索）
             location = search_params.get('location')
+            search_attempts = []
+            
             if location and location in Config.HOTPEPPER_AREA_CODES:
+                # 1回目：中エリア指定
                 params['middle_area'] = Config.HOTPEPPER_AREA_CODES[location]
                 print(f"[HOTPEPPER] Area: {location} -> {params['middle_area']}")
+                search_attempts.append(('middle_area', params['middle_area']))
             elif location:
                 # エリアコードにない場合はキーワード検索
                 params['keyword'] = location
                 print(f"[HOTPEPPER] Using keyword search for location: {location}")
+                search_attempts.append(('keyword', location))
             
             # 料理ジャンルの設定
             cuisine = search_params.get('cuisine')
@@ -627,15 +635,53 @@ class RestaurantSearchService:
                 elif budget == 'high':
                     params['budget'] = 'B001'  # 4000円~
             
-            print(f"[HOTPEPPER] Request params: {params}")
+            # 段階的検索の実行
+            restaurants = []
+            shops = []
+            
+            # 1回目の検索実行
+            print(f"[HOTPEPPER] Request params (1st attempt): {params}")
             
             response = requests.get(self.hotpepper_api, params=params, timeout=Config.REQUEST_TIMEOUT)
-            response.raise_for_status()
+            print(f"[HOTPEPPER] Response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                print(f"[HOTPEPPER] HTTP Error: {response.status_code} - {response.text}")
+                return []
             
             data = response.json()
-            shops = data.get('results', {}).get('shop', [])
+            results = data.get('results', {})
+            shops = results.get('shop', [])
+            print(f"[HOTPEPPER] 1st attempt - Raw shop count: {len(shops)}")
             
-            restaurants = []
+            # 1回目で結果が少ない場合、2回目の検索を試行
+            if len(shops) < 5 and location:
+                print("[HOTPEPPER] Few results in 1st attempt, trying broader search...")
+                
+                # 2回目：キーワード検索で再試行
+                fallback_params = params.copy()
+                
+                # middle_areaを削除してキーワード検索に変更
+                if 'middle_area' in fallback_params:
+                    del fallback_params['middle_area']
+                fallback_params['keyword'] = location
+                
+                print(f"[HOTPEPPER] Request params (2nd attempt): {fallback_params}")
+                
+                fallback_response = requests.get(self.hotpepper_api, params=fallback_params, timeout=Config.REQUEST_TIMEOUT)
+                if fallback_response.status_code == 200:
+                    fallback_data = fallback_response.json()
+                    fallback_results = fallback_data.get('results', {})
+                    fallback_shops = fallback_results.get('shop', [])
+                    print(f"[HOTPEPPER] 2nd attempt - Raw shop count: {len(fallback_shops)}")
+                    
+                    # より多くの結果が得られた場合は2回目の結果を使用
+                    if len(fallback_shops) > len(shops):
+                        shops = fallback_shops
+                        print("[HOTPEPPER] Using 2nd attempt results")
+            
+            print(f"[HOTPEPPER] Final shop count: {len(shops)}")
+            
             for shop in shops:
                 restaurant_id = f"hotpepper_{shop.get('id')}"
                 
@@ -692,9 +738,18 @@ class RestaurantSearchService:
             
         except requests.RequestException as e:
             print(f"[HOTPEPPER] API request error: {e}")
+            if hasattr(e, 'response') and e.response:
+                print(f"[HOTPEPPER] Response status: {e.response.status_code}")
+                print(f"[HOTPEPPER] Response text: {e.response.text}")
+            return []
+        except json.JSONDecodeError as e:
+            print(f"[HOTPEPPER] JSON decode error: {e}")
+            print(f"[HOTPEPPER] Response text: {response.text}")
             return []
         except Exception as e:
-            print(f"[HOTPEPPER] Error: {e}")
+            print(f"[HOTPEPPER] Unexpected error: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     def _search_tabelog(self, search_params: Dict[str, Any], seen_ids: set) -> List[Dict[str, Any]]:
